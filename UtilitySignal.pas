@@ -265,8 +265,8 @@ const
   SI_QUEUE = -1;
 
 type
-  sa_sighandler_t = procedure(signo: cint); cdecl;
-  sa_sigaction_t =  procedure(signo: cint; siginfo: psiginfo; context: Pointer); cdecl;
+  sighandlerfce_t = procedure(signo: cint); cdecl;
+  sigactionfce_t =  procedure(signo: cint; siginfo: psiginfo; context: Pointer); cdecl;
 
   sigset_t = array[0..Pred(1024 div (8 * SizeOf(culong)))] of culong;
   psigset_t = ^sigset_t;
@@ -274,8 +274,8 @@ type
   sigaction_t = record
     handler: record
       case Integer of
-        0: (sa_handler:   sa_sighandler_t);
-        1: (sa_sigaction: sa_sigaction_t);
+        0: (sa_handler:   sighandlerfce_t);
+        1: (sa_sigaction: sigactionfce_t);
     end;
     sa_mask:      sigset_t;
     sa_flags:     cint;
@@ -976,8 +976,8 @@ procedure SetupSignalHandler;
 var
   SignalAction: sigaction_t;
 begin
-GVAR_SignalNumber := allocate_rtsig(1);
 // get unused signal number
+GVAR_SignalNumber := allocate_rtsig(1);
 If GVAR_SignalNumber < 0 then
   raise EUSSetupError.CreateFmt('SetupSignalHandler: Failed to allocate unused signal number (%d).',[errno_ptr^]);
 // look if the selected signal is really unused (does not have handler assigned)
@@ -1008,7 +1008,7 @@ end;
 
 procedure DispatcherFinal;
 begin
-FreeandNil(GVAR_Dispatcher);
+FreeAndNil(GVAR_Dispatcher);
 end;
 
 
