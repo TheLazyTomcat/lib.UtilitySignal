@@ -239,6 +239,7 @@ type
   EUSGlobalStateCloseError   = class(EUSException);
   EUSGlobalStateMutexError   = class(EUSException);
   EUSGlobalStateModListError = class(EUSException);
+  EUSGlobalStateCallError    = class(EUSException);
 
 {===============================================================================
 --------------------------------------------------------------------------------
@@ -1474,8 +1475,8 @@ end;
 ===============================================================================}
 type
   TUSGlobalStateModule = record
-    SignalFetchFrom:  procedure(SignalBuffer: PUSSignalBuffer); stdcall;
-    MakePrimary:      procedure(ExpectedHandler: Pointer); stdcall;
+    SignalFetchFrom:  Function(SignalBuffer: PUSSignalBuffer): Boolean; stdcall;
+    MakePrimary:      Function(ExpectedHandler: Pointer): Boolean; stdcall;
   end;
   PUSGlobalStateModule  = ^TUSGlobalStateModule;
 
@@ -1542,29 +1543,40 @@ end;
     Global state - exported functions
 -------------------------------------------------------------------------------}
 
-procedure SignalFetchFrom(SignalBuffer: PUSSignalBuffer); stdcall;
+Function SignalFetchFrom(SignalBuffer: PUSSignalBuffer): Boolean; stdcall;
 begin
-GVAR_ModuleState.ProcessingLock.Enter;
+Result := False;
 try
-  TUSSignalDispatcher(GVAR_ModuleState.Dispatcher).DispatchFrom(SignalBuffer^);
-finally
-  GVAR_ModuleState.ProcessingLock.Leave;
+  GVAR_ModuleState.ProcessingLock.Enter;
+  try
+    TUSSignalDispatcher(GVAR_ModuleState.Dispatcher).DispatchFrom(SignalBuffer^);
+    Result := True;
+  finally
+    GVAR_ModuleState.ProcessingLock.Leave;
+  end;
+except
+  // do not allow exception to excape from current module
 end;
 end;
 
 //------------------------------------------------------------------------------
 
-procedure MakePrimary(ExpectedHandler: Pointer); stdcall;
+Function MakePrimary(ExpectedHandler: Pointer): Boolean; stdcall;
 begin
-// this needs to be locked to prevent races with SignalFetch
-GVAR_ModuleState.ProcessingLock.Enter;
+Result := False;
 try
-  // no need to allocate signal, it was already done by first primary module
-  SignalBuffersAllocate;
-  SignalActionInstall(ExpectedHandler);
-  GVAR_ModuleState.GlobalInfo.IsPrimary := True;
-finally
-  GVAR_ModuleState.ProcessingLock.Leave;
+  // this needs to be locked to prevent races with SignalFetch
+  GVAR_ModuleState.ProcessingLock.Enter;
+  try
+    // no need to allocate signal, it was already done by first primary module
+    SignalBuffersAllocate;
+    SignalActionInstall(ExpectedHandler);
+    GVAR_ModuleState.GlobalInfo.IsPrimary := True;
+    Result := True;
+  finally
+    GVAR_ModuleState.ProcessingLock.Leave;
+  end;
+except
 end;
 end;
 
@@ -1784,9 +1796,11 @@ try
           If GSHeadPtr^.Count > 0 then
             begin
               If Assigned(@PUSGlobalStateModule(GSHeadPtr^.ModuleList^)^.MakePrimary) then
-                PUSGlobalStateModule(GSHeadPtr^.ModuleList^)^.MakePrimary(@SignalHandler)
-              else
-                raise EUSGlobalStateCloseError.Create('GlobalStateClose: MakePrimary not assigned.');
+                begin
+                  If not PUSGlobalStateModule(GSHeadPtr^.ModuleList^)^.MakePrimary(@SignalHandler) then
+                    raise EUSGlobalStateCallError.Create('GlobalStateClose: Failed to transfer primarity.');
+                end
+              else raise EUSGlobalStateCloseError.Create('GlobalStateClose: MakePrimary not assigned.');
             end
           else raise EUSGlobalStateCloseError.Create('GlobalStateClose: Empty module list.');
         {
@@ -1838,7 +1852,8 @@ try
         begin
           If Assigned(GSListPtr^.SignalFetchFrom) and
             (@GSListPtr^.SignalFetchFrom <> @SignalFetchFrom) then
-            GSListPtr^.SignalFetchFrom(SignalBuffer);
+            If not GSListPtr^.SignalFetchFrom(SignalBuffer) then
+              raise EUSGlobalStateCallError.Create('GlobalStateDispatch: Failed to dispatch signals to module.');
           Inc(GSListPtr);
         end;
     end;
