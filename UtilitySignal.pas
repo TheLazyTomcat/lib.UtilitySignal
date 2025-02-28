@@ -62,9 +62,9 @@
     Make sure you understand how signals work before using this library, so
     reading the linux manual (signal(7)) is strongly recommended.
 
-  Version 2.0 (2025-02-18)
+  Version 2.1 (2025-02-28)
 
-  Last change 2025-02-20
+  Last change 2025-02-28
 
   ©2024-2025 František Milt
 
@@ -207,18 +207,14 @@ unit UtilitySignal;
   If not defined, then this library will operate only within a single module
   into which it is compiled.
 
-  Not defined by default.
+  Defined by default.
 
-  To enable/define this symbol in a project without changing this library,
-  define project-wide symbol UtilitySignal_ModuleShared_On.
-
-    WARNING - currently this feture does not work because of problem in library
-              ProcessGlobalVars. That also means it is completely untested.
+  To disable/undefine this symbol in a project without changing this library,
+  define project-wide symbol UtilitySignal_ModuleShared_Off.
 }
-{$UNDEF ModuleShared}
-{$IFDEF UtilitySignal_ModuleShared_On}
-  {$DEFINE ModuleShared}
-  {$MESSAGE WARN 'Do not use this feature, currently it does not work!'}
+{$DEFINE ModuleShared}
+{$IFDEF UtilitySignal_ModuleShared_Off}
+  {$UNDEF ModuleShared}
 {$ENDIF}
 
 interface
@@ -291,7 +287,7 @@ Function GetCurrentProcessID: pid_t;
 
 //------------------------------------------------------------------------------
 {
-  SendSignal
+  SendSignalTo
 
   Sends selected signal to a given process with given value.
 
@@ -305,19 +301,21 @@ Function GetCurrentProcessID: pid_t;
   The signal will arrive with code set to SI_QUEUE.
 
     WARNING - signals are quite deep subject, so do not use provided functions
-              without considering what are you about to do. Always read the
-              manual.
+              without considering what are you about to do. Always read your
+              operating system's manual.
 }
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue; out Error: Integer): Boolean; overload;
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Integer; out Error: Integer): Boolean; overload;
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Pointer; out Error: Integer): Boolean; overload;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue; out Error: Integer): Boolean; overload;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Integer; out Error: Integer): Boolean; overload;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Pointer; out Error: Integer): Boolean; overload;
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue): Boolean; overload;
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Integer): Boolean; overload;
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Pointer): Boolean; overload;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue): Boolean; overload;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Integer): Boolean; overload;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Pointer): Boolean; overload;
 
 {
-  Followng overloads are sending signal back to the calling process (but not
+  SendSignal
+
+  These functions are sending signal back to the calling process (but not
   necessarily the calling thread!) using the signal allocated for this library.
 }
 Function SendSignal(Value: TUSSignalValue; out Error: Integer): Boolean; overload;
@@ -452,7 +450,7 @@ type
     respective instances of TUtilitySignal) and then passes all signals meant
     for this instance to events/callbacks assigned to OnSignal multi-event.
 
-    The are processed in the order they have arrived.
+    They are processed in the order they have arrived.
 
     ProcessSignal passes only one signal whereas ProcessSignals passes all
     received signals.
@@ -551,7 +549,8 @@ uses
   UnixType, SysCall, Classes, {$IFDEF LCL}Forms,{$ENDIF}
   AuxTypes, InterlockedOps{$IFDEF ModuleShared}, ProcessGlobalVars{$ENDIF};
 
-{$LINKLIB pthread}
+{$LINKLIB C}
+{$LINKLIB PTHREAD}
 
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
@@ -613,6 +612,8 @@ Function sigemptyset(_set: psigset_t): cint; cdecl; external;
 Function sigaddset(_set: psigset_t; signum: cint): cint; cdecl; external;
 
 Function pthread_sigmask(how: cint; newset,oldset: psigset_t): cint; cdecl; external;
+
+Function pthread_equal(t1: pthread_t; t2: pthread_t): cint; cdecl; external;
 
 Function sigaction(signum: cint; act: psigaction_t; oact: psigaction_t): cint; cdecl; external;
 Function sigqueue(pid: pid_t; sig: cint; value: sigval_t): cint; cdecl; external;
@@ -1179,7 +1180,7 @@ end;
 
 procedure TUSSignalDispatcher.DispatchFrom(var SignalBuffer: TUSSignalBuffer);
 
-  Function StrIfThen(Condition: Boolean; const OnTrue, OnFalse: String): String;
+  Function StrIfThen(Condition: Boolean; const OnTrue,OnFalse: String): String;
   begin
     If Condition then
       Result := OnTrue
@@ -1942,25 +1943,25 @@ end;
 
 //==============================================================================
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue; out Error: Integer): Boolean;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue; out Error: Integer): Boolean;
 begin
-Result := SendSignal(ProcessID,Signal,Value.PtrValue,Error);
+Result := SendSignalTo(ProcessID,Signal,Value.PtrValue,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Integer; out Error: Integer): Boolean;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Integer; out Error: Integer): Boolean;
 var
   Temp: TUSSignalValue;
 begin
 FillChar(Addr(Temp)^,SizeOf(Temp),0);
 Temp.IntValue := Value;
-Result := SendSignal(ProcessID,Signal,Temp.PtrValue,Error);
+Result := SendSignalTo(ProcessID,Signal,Temp.PtrValue,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Pointer; out Error: Integer): Boolean;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Pointer; out Error: Integer): Boolean;
 var
   SigValue: sigval_t;
 begin
@@ -1979,50 +1980,50 @@ end;
 
 //------------------------------------------------------------------------------
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue): Boolean;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: TUSSignalValue): Boolean;
 var
   Error: Integer;
 begin
-Result := SendSignal(ProcessID,Signal,Value,Error);
+Result := SendSignalTo(ProcessID,Signal,Value,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Integer): Boolean;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Integer): Boolean;
 var
   Error: Integer;
 begin
-Result := SendSignal(ProcessID,Signal,Value,Error);
+Result := SendSignalTo(ProcessID,Signal,Value,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-Function SendSignal(ProcessID: pid_t; Signal: Integer; Value: Pointer): Boolean;
+Function SendSignalTo(ProcessID: pid_t; Signal: Integer; Value: Pointer): Boolean;
 var
   Error: Integer;
 begin
-Result := SendSignal(ProcessID,Signal,Value,Error);
+Result := SendSignalTo(ProcessID,Signal,Value,Error);
 end;
 
 //------------------------------------------------------------------------------
 
 Function SendSignal(Value: TUSSignalValue; out Error: Integer): Boolean;
 begin
-Result := SendSignal(getpid,GVAR_ModuleState.Signal,Value,Error);
+Result := SendSignalTo(getpid,GVAR_ModuleState.Signal,Value,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 Function SendSignal(Value: Integer; out Error: Integer): Boolean;
 begin
-Result := SendSignal(getpid,GVAR_ModuleState.Signal,Value,Error);
+Result := SendSignalTo(getpid,GVAR_ModuleState.Signal,Value,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 Function SendSignal(Value: Pointer; out Error: Integer): Boolean;
 begin
-Result := SendSignal(getpid,GVAR_ModuleState.Signal,Value,Error);
+Result := SendSignalTo(getpid,GVAR_ModuleState.Signal,Value,Error);
 end;
 
 //------------------------------------------------------------------------------
@@ -2031,7 +2032,7 @@ Function SendSignal(Value: TUSSignalValue): Boolean;
 var
   Error: Integer;
 begin
-Result := SendSignal(getpid,GVAR_ModuleState.Signal,Value,Error);
+Result := SendSignalTo(getpid,GVAR_ModuleState.Signal,Value,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2040,7 +2041,7 @@ Function SendSignal(Value: Integer): Boolean;
 var
   Error: Integer;
 begin
-Result := SendSignal(getpid,GVAR_ModuleState.Signal,Value,Error);
+Result := SendSignalTo(getpid,GVAR_ModuleState.Signal,Value,Error);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2049,7 +2050,7 @@ Function SendSignal(Value: Pointer): Boolean;
 var
   Error: Integer;
 begin
-Result := SendSignal(getpid,GVAR_ModuleState.Signal,Value,Error);
+Result := SendSignalTo(getpid,GVAR_ModuleState.Signal,Value,Error);
 end;
 
 {===============================================================================
@@ -2174,7 +2175,7 @@ begin
 // since this property can be accessed from multiple threads, we have to protect it
 ThreadLock;
 try
-Result := fCoalesceSignals;
+  Result := fCoalesceSignals;
 finally
   ThreadUnlock;
 end;
@@ -2287,6 +2288,7 @@ end;
 
 destructor TUtilitySignal.Destroy;
 begin
+UnregisterFromOnIdle;
 Finalize;
 inherited;
 end;
@@ -2297,7 +2299,7 @@ Function TUtilitySignal.RegisterForOnIdle: Boolean;
 begin
 Result := False;
 {$IFDEF LCL}
-If CheckThread and (GetCurrentThreadID = MainThreadID) then
+If CheckThread and (pthread_equal(GetCurrentThreadID,MainThreadID) <> 0) then
   begin
     Application.AddOnIdleHandler(OnAppIdleHandler,False);
     fRegisteredOnIdle := True;
@@ -2436,6 +2438,7 @@ FreeandNil(GVAR_ModuleState.ProcessingLock);
 end;
 
 //==============================================================================
+
 initialization
   LibraryInitialize;
 
