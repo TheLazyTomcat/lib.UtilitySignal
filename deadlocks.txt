@@ -1,0 +1,352 @@
+  Lock chains
+
+= Master module ================================================================
+
+    LibraryInitialize
+      GlobalStateOpen                                 GlobVarLock
+        GlobalStateAdd                                  GlobalStateLock
+                                                        GlobalStateUnlock
+                                                      GlobVarUnlock
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    LibraryFinalize (last module)
+      GlobalStateClose                                GlobVarLock
+                                                      GlobVarUnlock
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    LibraryFinalize (NOT last module)
+      GlobalStateClose                                GlobVarLock
+                                                      GlobalStateLock
+        GlobalStateRemove                               GlobalStateLock
+                                                        GlobalStateUnlock
+        Modules[i].MakeMaster                           *(slaves)GVAR_ModuleState.ProcessingLock.Enter
+                                                        *(slaves)GVAR_ModuleState.ProcessingLock.Leave
+                                                      GlobalStateUnlock
+                                                      GlobVarUnlock
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    SignalFetch                                       GVAR_ModuleState.ProcessingLock.Enter
+                                                      Lock(GVAR_ModuleState.PendingSignals.Lock)
+                                                      Unlock(GVAR_ModuleState.PendingSignals.Lock)
+      TUSSignalDispatcher.DispatchFrom                  .fMainListLock.Enter
+        fUtilitySignals[]                                 .ThreadLock
+                                                          .ThreadUnlock
+                                                        .fMainListLock.Leave
+      GlobalStateDispatch                               GlobalStateLock
+        Modules[].SignalDispatchFrom                      *(slaves)GVAR_ModuleState.ProcessingLock.Enter
+          TUSSignalDispatcher.DispatchFrom                  .fMainListLock.Enter
+            fUtilitySignals[]                                 .ThreadLock
+                                                              .ThreadUnlock
+                                                            .fMainListLock.Leave
+                                                          *(slaves)GVAR_ModuleState.ProcessingLock.LEave
+                                                        GlobalStateUnlock
+      TUSSignalDispatcher.ProcessOrphans                .fOrphansLock.Enter
+                                                        .fOrphansLock.Leave
+                                                      GVAR_ModuleState.ProcessingLock.Leave
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    AllocateSignal                                    GVAR_ModuleState.ProcessingLock.Enter
+                                                      GlobalStateLock
+      Modules[].UpdateSignal                            *(slaves)GVAR_ModuleState.ProcessingLock.Enter
+                                                        *(slaves)GVAR_ModuleState.ProcessingLock.Leave
+                                                      GlobalStateUnlock
+                                                      GVAR_ModuleState.ProcessingLock.Leave
+
+= Slave module =================================================================
+
+    LibraryInitialize
+      GlobalStateOpen                                 GlobVarLock
+                                                      GlobalStateLock
+                                                      GVAR_ModuleState.ProcessingLock.Enter
+                                                      GVAR_ModuleState.ProcessingLock.Leave
+        GlobalStateAdd                                  GlobalStateLock
+                                                        GlobalStateUnlock
+                                                      GlobalStateUnlock
+                                                      GlobVarUnlock
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    LibraryFinalize (last module - not possible)
+      GlobalStateClose                                GlobVarLock
+                                                      GlobVarUnlock
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    LibraryFinalize (NOT last module)
+      GlobalStateClose                                GlobVarLock
+                                                      GlobalStateLock
+        GlobalStateRemove                               GlobalStateLock
+                                                        GlobalStateUnlock
+                                                      GlobalStateUnlock
+                                                      GlobVarUnlock
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    SignalFetch                                       GVAR_ModuleState.ProcessingLock.Enter
+                                                      GVAR_ModuleState.ProcessingLock.Leave
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    AllocateSignal                                    GVAR_ModuleState.ProcessingLock.Enter
+                                                      GlobalStateLock
+      Modules[].AllocateSignal                          *(master)GVAR_ModuleState.ProcessingLock.Enter
+        Modules[].UpdateSignal                            *(slaves)GVAR_ModuleState.ProcessingLock.Enter
+                                                          *(slaves)GVAR_ModuleState.ProcessingLock.Leave
+                                                        *(master)GVAR_ModuleState.ProcessingLock.Leave
+                                                      GlobalStateUnlock
+                                                      GVAR_ModuleState.ProcessingLock.Leave
+
+********************************************************************************
+
+  Possible races
+
+    (master)LibraryInitialize --  --  --  --  --  --  --  --  --  --  --  --  --
+
+        Cannot interact with anything - it is by definition first thing to
+        happen and no other action can happen before it ends.
+
+
+    (master)LibraryFinalize (last mod)--  --  --  --  --  --  --  --  --  --  --
+
+        Cannot interact with anything - it is by definition last thing to
+        happend and nothing else can be called after it starts.
+
+
+    (master)LibraryFinalize (NOT last mod)--  --  --  --  --  --  --  --  --  --
+
+      (master)LibraryInitialize
+      (master)LibraryFinalize (last mod)
+      (master)LibraryFinalize (NOT last mod)
+
+        None can happen at the same time (serialized by OS and on GlobVarLock).
+
+      (master)SignalFetch
+      (master)AllocateSignal
+
+        Should not be possible when the module is being finalized.
+
+      (slave)LibraryInitialize
+      (slave)LibraryFinalize (last mod - not possible)
+      (slave)LibraryFinalize (NOT last mod)
+
+        Serialized by OS and on GlobVarLock.
+
+      (slave)SignalFetch
+
+        Slave SignalFetch does nothing, but they can meet on GVAR_ModuleState.>
+        ProcessingLock in case the module calling SignalFetch is at the same
+        time selected as a new master.
+
+      (slave)AllocateSignal
+
+>>>>>>  There is a deadlock possible here if module calling AllocateSignal is
+        selected as the new master.
+
+          slave > GVAR_ModuleState.ProcessingLock.Enter > GlobalStateLock > ...
+         master > GlobalStateLock > GVAR_ModuleState.ProcessingLock.Enter > ...
+
+
+    (master)SignalFetch   --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
+      (master)LibraryInitialize
+      (master)LibraryFinalize (last mod)
+      (master)LibraryFinalize (NOT last mod)
+
+        These cannot interact - if we are fetching signals, it means the master
+        must exist, so it can hardly be at the same time initialized or
+        finalized.
+
+      (master)SignalFetch
+
+        Entire execution is serialized on GVAR_ModuleState.ProcessingLock, so
+        it cannot enter twice from two different threads. Also, not called
+        recursively and no user code (that could do recursive call) is called
+        from within.
+
+      (master)AllocateSignal
+
+        Both are serialized on GVAR_ModuleState.ProcessingLock. AllocateSignal
+        does not call SignalFetch or vice versa.
+
+      (slave)LibraryInitialize
+      (slave)LibraryFinalize (last mod - not possible)
+      (slave)LibraryFinalize (NOT last mod)
+
+        Both calls meet on GlobalStateLock, it seems no other races are there
+        (note that the initialized slave module is not added to the module list
+        until it is completely prepared for use, just before global state is
+        unlocked - therefore it cannot be called by master's SignalFetch->
+        SignalDispatchFrom before it is ready for it).
+
+      (slave)SignalFetch
+
+        They can both meet on slave's GVAR_ModuleState.ProcessingLock, which
+        should pose no problem as slave SignalFetch does nothing and exits.
+
+      (slave)AllocateSignal
+
+>>>>>>  Deadlock possible here if master is dispatching signals to the same
+        slave that calls AllocateSignal.
+
+         master > GlobalStateLock > GVAR_ModuleState.ProcessingLock.Enter > ...
+          slave > GVAR_ModuleState.ProcessingLock.Enter > GlobalStateLock > ...
+
+
+    (master)AllocateSignal    --  --  --  --  --  --  --  --  --  --  --  --  --
+
+        The same case as (master)SignalFetch (including deadlock), see there
+        for details.
+
+
+    (slave)LibraryInitialize  --  --  --  --  --  --  --  --  --  --  --  --  --
+
+      (master)LibraryInitialize
+      (master)LibraryFinalize (last mod)
+      (master)LibraryFinalize (NOT last mod)
+
+        If initializing slave module, then master must already exist (it cannot
+        be currently being initialized or finalized), and since this all is
+        also serialized by the OS and on GlobVarLock, they cannot execute
+        concurently.
+
+      (master)SignalFetch
+      (master)AllocateSignal
+
+        See (master)SignalFetch vs. (slave)LibraryInitialize.
+
+      (slave)LibraryInitialize
+      (slave)LibraryFinalize (last mod - not possible)
+      (slave)LibraryFinalize (NOT last mod)
+
+        All serialized by the OS and on GlobVarLock.
+
+      (slave)SignalFetch
+
+        No interaction possible.
+
+      (slave)AllocateSignal
+
+        They can meet on GlobalStateLock. Other than that there is no race.
+
+
+    (slave)LibraryFinalize (last mod - not possible)  --  --  --  --  --  --  --
+
+        This cannot occur, only master can be last module.
+
+    (slave)LibraryFinalize (NOT last mod)
+
+      (master)LibraryInitialize
+      (master)LibraryFinalize (last mod)
+
+        Cannot happen concurently. If master is being initialized, then there
+        can be no slave to be finalized. If master is being finalized as last
+        mod, there can be no other module, slave or not.
+
+      (master)LibraryFinalize (NOT last mod)
+
+        Serialized by the OS and on GlobVarLock.
+
+      (master)SignalFetch
+      (master)AllocateSignal
+
+        See (master)SignalFetch vs. (slave)LibraryFinalize (NOT last mod).
+
+      (slave)LibraryInitialize
+      (slave)LibraryFinalize (last mod - not possible)
+      (slave)LibraryFinalize (NOT last mod)
+
+        Serialized by the OS and on GlobVarLock.
+
+      (slave)SignalFetch
+
+        No interaction if from different modules. Should not happen from the
+        same module (module is being finalized, so it should not be possible
+        to call its SignalFetch).
+
+      (slave)AllocateSignal
+
+        They meet on GlobalStateLock.
+
+
+    (slave)SignalFetch    --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
+      (master)LibraryInitialize
+      (master)LibraryFinalize (last mod)
+
+        Should never happen - if master is being initialized or finalized as a
+        last module, then there can be no slave that could call SignalFetch.
+
+      (master)LibraryFinalize (NOT last mod)
+
+        Can meet on slave's GVAR_ModuleState.ProcessingLock if it was selected
+        as a new master.
+
+      (master)SignalFetch
+      (master)AllocateSignal
+
+        Can meet on slave's GVAR_ModuleState.ProcessingLock.
+
+      (slave)LibraryInitialize
+      (slave)LibraryFinalize (last mod - not possible)
+      (slave)LibraryFinalize (NOT last mod)
+
+        No interaction is possible.
+
+      (slave)SignalFetch
+
+        If from different modules, then no iteraction is possible. When called
+        multiple time in the same module then serialized on GVAR_ModuleState.>
+        ProcessingLock.
+
+      (slave)AllocateSignal
+
+         They always meet on GVAR_ModuleState.ProcessingLock.
+
+
+    (slave)AllocateSignal --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
+      (master)LibraryInitialize
+      (master)LibraryFinalize (last mod)
+
+        Cannot happen - there can be no slave is master is being initialized or
+        is finalized as a last module.
+
+      (master)LibraryFinalize (NOT last mod)
+
+>>>>>>  Deadlock possible here if module calling AllocateSignal is selected as
+        the new master.
+
+          slave > GVAR_ModuleState.ProcessingLock.Enter > GlobalStateLock > ...
+         master > GlobalStateLock > GVAR_ModuleState.ProcessingLock.Enter > ...
+
+      (master)SignalFetch
+
+>>>>>>  Deadlock possible here if master is dispatching signals to the same
+        slave that calls AllocateSignal.
+
+          slave > GVAR_ModuleState.ProcessingLock.Enter > GlobalStateLock > ...
+         master > GlobalStateLock > GVAR_ModuleState.ProcessingLock.Enter > ...
+
+      (master)AllocateSignal
+
+>>>>>>  Deadlock possible here.
+
+          slave > GVAR_ModuleState.ProcessingLock.Enter > GlobalStateLock > ...
+         master > GlobalStateLock > GVAR_ModuleState.ProcessingLock.Enter > ...
+
+      (slave)LibraryInitialize
+      (slave)LibraryFinalize (last mod - not possible)
+      (slave)LibraryFinalize (NOT last mod)
+
+        Can meet on GlobalStateLock, otherwise no interaction if from diffrent
+        modules. They cannot be from the same module as it either is not loaded
+        yet or is already being unloaded.
+
+      (slave)SignalFetch
+      (slave)AllocateSignal
+
+        Serialized on GVAR_ModuleState.ProcessingLock.
